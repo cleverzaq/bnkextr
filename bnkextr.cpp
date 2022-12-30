@@ -8,6 +8,8 @@
 #include <cstdint>
 #include <map>
 
+#define ALIGN(value, align) value + ((align - (value % align)) % align)
+
 struct Index;
 struct Section;
 
@@ -179,7 +181,9 @@ int main(int argument_count, char* arguments[])
     // Has no argument(s)
     if (argument_count < 2)
     {
-        std::cout << "Usage: bnkextr filename.bnk [/swap] [/nodir] [/obj]\n";
+        std::cout << "Usage: bnkextr filename.bnk [/extract] [/import] [/swap] [/nodir] [/obj]\n";
+        std::cout << "\t/extract - extract the files to the folder\n";
+        std::cout << "\t/import - import the files from the folder\n";
         std::cout << "\t/swap - swap byte order (use it for unpacking 'Army of Two')\n";
         std::cout << "\t/nodir - create no additional directory for the *.wem files\n";
         std::cout << "\t/obj - generate an objects.txt file with the extracted object data\n";
@@ -187,9 +191,12 @@ int main(int argument_count, char* arguments[])
     }
 
     auto bnk_filename = std::filesystem::path{ std::string{ arguments[1] } };
+    auto bnk_filename_out = std::filesystem::path{ std::string{ arguments[1] } + ".out" };
     auto swap_byte_order = HasArgument(arguments, argument_count, "/swap");
     auto no_directory = HasArgument(arguments, argument_count, "/nodir");
     auto dump_objects = HasArgument(arguments, argument_count, "/obj");
+    auto extract = HasArgument(arguments, argument_count, "/extract");
+    auto import = HasArgument(arguments, argument_count, "/import");
 
     auto bnk_file = std::fstream{ bnk_filename, std::ios::binary | std::ios::in };
 
@@ -201,7 +208,7 @@ int main(int argument_count, char* arguments[])
     }
 
     auto data_offset = std::size_t{ 0U };
-    auto files = std::vector<Index>{};
+    auto files = std::vector<std::pair<Index, std::uint32_t>>{};
     auto content_section = Section{};
     auto content_index = Index{};
     auto bank_header = BankHeader{};
@@ -232,7 +239,7 @@ int main(int argument_count, char* arguments[])
             for (auto i = 0U; i < content_section.size; i += sizeof(content_index))
             {
                 ReadContent(bnk_file, content_index);
-                files.push_back(content_index);
+                files.push_back(std::make_pair(content_index, std::uint32_t(std::uint32_t(bnk_file.tellg()) - sizeof(content_index))));
             }
         }
         else if (Compare(content_section.sign, "STID"))
@@ -377,40 +384,94 @@ int main(int argument_count, char* arguments[])
         std::cout << "Objects file was written to: " << object_filename.string() << "\n";
     }
 
-    // Extract WEM files
-    if (data_offset == 0U || files.empty())
+    if (extract)
     {
-        std::cout << "No WEM files discovered to be extracted\n";
-        return EXIT_SUCCESS;
-    }
-
-    std::cout << "Found " << files.size() << " WEM files\n";
-    std::cout << "Start extracting...\n";
-
-    for (auto& [id, offset, size] : files)
-    {
-        auto wem_filename = output_directory;
-        wem_filename = wem_filename.append(std::to_string(id)).replace_extension(".wem");
-        auto wem_file = std::fstream{ wem_filename, std::ios::out | std::ios::binary };
-
-        if (swap_byte_order)
+        if (data_offset == 0U || files.empty())
         {
-            size = Swap32(size);
-            offset = Swap32(offset);
+            std::cout << "No WEM files discovered to be extracted\n";
+            return EXIT_SUCCESS;
         }
 
-        if (!wem_file.is_open())
+        std::cout << "Found " << files.size() << " WEM files\n";
+        std::cout << "Start extracting...\n";
+
+        for (unsigned int vpos = 0; vpos < files.size(); vpos++)
         {
-            std::cout << "Unable to write file '" << wem_filename.string() << "'\n";
-            continue;
+            auto wem_filename = output_directory;
+            wem_filename = wem_filename.append(std::to_string(files[vpos].first.id)).replace_extension(".wem");
+            auto wem_file = std::fstream{ wem_filename, std::ios::out | std::ios::binary };
+
+            if (swap_byte_order)
+            {
+                files[vpos].first.size = Swap32(files[vpos].first.size);
+                files[vpos].first.offset = Swap32(files[vpos].first.offset);
+            }
+
+            if (!wem_file.is_open())
+            {
+                std::cout << "Unable to write file '" << wem_filename.string() << "'\n";
+                continue;
+            }
+
+            auto data = std::vector<char>(files[vpos].first.size, 0U);
+            bnk_file.seekg(data_offset + files[vpos].first.offset);
+            bnk_file.read(data.data(), files[vpos].first.size);
+            wem_file.write(data.data(), files[vpos].first.size);
         }
 
-        auto data = std::vector<char>(size, 0U);
+        std::cout << "Files were extracted to: " << output_directory.string() << "\n";
+    }
+    
+    if (import) {
+        int audio_size = 0, vecsize = data_offset;
+        for (unsigned int vpos = 0, max = files.size(); vpos < max; vpos++)
+        {
+            audio_size += ((max - 1 == vpos) ? files[vpos].first.size : ALIGN(files[vpos].first.size, 16));
+        }
 
-        bnk_file.seekg(data_offset + offset);
-        bnk_file.read(data.data(), size);
-        wem_file.write(data.data(), size);
+        auto out_file = std::fstream{ bnk_filename_out, std::ios::binary | std::ios::out };
+        auto out_data = std::vector<char>(vecsize);
+        bnk_file.seekg(0, std::ios::beg);
+        bnk_file.read(out_data.data(), vecsize);
+
+        for (unsigned int vpos = 0, max = files.size(); vpos < max; vpos++)
+        {
+            auto wem_filename = output_directory;
+            wem_filename = wem_filename.append(std::to_string(files[vpos].first.id)).replace_extension(".wem");
+            auto wem_file = std::fstream{ wem_filename, std::ios::in | std::ios::binary };
+
+            if (!wem_file.is_open())
+            {
+                std::cout << "Unable to open file '" << wem_filename.string() << "'\n";
+                continue;
+            }
+
+            wem_file.seekg(0, std::ios::end);
+            auto size = wem_file.tellg();
+            wem_file.seekg(0, std::ios::beg);
+
+            auto vsize = vecsize + size, vsz = ((max - 1 == vpos) ? vsize : ALIGN(vsize, 16));
+            out_data.resize(vsz);
+            wem_file.read(out_data.data() + vecsize, size);
+
+            files[vpos].first.size = size;
+            files[vpos].first.offset = vecsize - data_offset;
+            memcpy(&out_data[files[vpos].second], &files[vpos].first, sizeof(Index));
+
+            vecsize = vsz;
+        }
+
+        bnk_file.seekg(0, std::ios::end);
+        auto size = bnk_file.tellg();
+        bnk_file.seekg(audio_size + data_offset, std::ios::beg);
+        size -= audio_size + data_offset;
+        out_data.resize(vecsize + size);
+        bnk_file.read(out_data.data() + vecsize, size);
+        vecsize += size;
+
+        out_file.write(out_data.data(), vecsize);
+        out_file.close();
     }
 
-    std::cout << "Files were extracted to: " << output_directory.string() << "\n";
+    bnk_file.close();
 }

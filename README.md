@@ -1,4 +1,4 @@
-# Wwise *.BNK File Extractor
+# Wwise *.BNK File Extractor and Importer
 
 This is a C++ rewrite and extension of **bnkextr** originally written by CTPAX-X in Delphi.
 It extracts `WEM` files from the ever more popular Wwise `BNK` format.
@@ -8,7 +8,9 @@ Use [ww2ogg](https://github.com/hcs64/ww2ogg) to convert `WEM` files to the `OGG
 ## Usage
 
 ```
-Usage: bnkextr filename.bnk [/swap] [/nodir] [/obj]
+Usage: bnkextr filename.bnk [/extract] [/import] [/swap] [/nodir] [/obj]
+        /extract - extract the files to the folder
+        /import - import the files from the folder
         /swap - swap byte order (use it for unpacking 'Army of Two')
         /nodir - create no additional directory for the *.wem files
         /obj - generate an objects.txt file with the extracted object data
