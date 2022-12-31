@@ -38,6 +38,36 @@ struct BankHeader
 };
 #pragma pack(pop)
 
+#pragma pack(push, 1)
+struct PCK_Header
+{
+    std::uint32_t unkn2;
+    std::uint32_t languageLength;
+    std::uint32_t bnkTableLength;
+    std::uint32_t wemTableLength;
+    std::uint32_t unkn6;
+};
+#pragma pack(pop)
+
+#pragma pack(push, 1)
+struct stringData
+{
+    std::uint32_t postHeaderOffset;
+    std::uint32_t index;
+};
+#pragma pack(pop)
+
+#pragma pack(push, 1)
+struct embeddedMedia
+{
+    uint32_t ID;
+    uint32_t unkn;
+    uint32_t Length;
+    uint32_t Offset;
+    uint32_t language;
+};
+#pragma pack(pop)
+
 enum class ObjectType : std::int8_t
 {
     SoundEffectOrVoice = 2,
@@ -178,7 +208,6 @@ int main(int argument_count, char* arguments[])
     std::cout << "Wwise *.BNK File Extractor\n";
     std::cout << "(c) RAWR 2015-2022 - https://rawr4firefall.com\n\n";
 
-    // Has no argument(s)
     if (argument_count < 2)
     {
         std::cout << "Usage: bnkextr filename.bnk [/extract] [/import] [/swap] [/nodir] [/obj]\n";
@@ -200,11 +229,17 @@ int main(int argument_count, char* arguments[])
 
     auto bnk_file = std::fstream{ bnk_filename, std::ios::binary | std::ios::in };
 
-    // Could not open BNK file
     if (!bnk_file.is_open())
     {
         std::cout << "Can't open input file: " << bnk_filename << "\n";
         return EXIT_FAILURE;
+    }
+
+    auto output_directory = bnk_filename.parent_path();
+
+    if (!no_directory)
+    {
+        output_directory = CreateOutputDirectory(bnk_filename);
     }
 
     auto data_offset = std::size_t{ 0U };
@@ -215,6 +250,10 @@ int main(int argument_count, char* arguments[])
     auto objects = std::vector<Object>{};
     auto event_objects = std::map<std::uint32_t, EventObject>{};
     auto event_action_objects = std::map<std::uint32_t, EventActionObject>{};
+
+    auto rfiles = std::vector<std::pair<embeddedMedia, std::uint32_t>>{};
+    std::vector<std::pair<std::vector<char>, std::uint32_t>> riff;
+    auto riffnum = 0;
 
     while (ReadContent(bnk_file, content_section))
     {
@@ -233,9 +272,44 @@ int main(int argument_count, char* arguments[])
             std::cout << "Wwise Bank Version: " << bank_header.version << "\n";
             std::cout << "Bank ID: " << bank_header.id << "\n";
         }
+        else if (Compare(content_section.sign, "AKPK"))
+        {
+            PCK_Header header = PCK_Header{};
+            ReadContent(bnk_file, header);
+
+            std::uint32_t stringDataCount = 0;
+            ReadContent(bnk_file, stringDataCount);
+
+            for (unsigned int i = 0; i < stringDataCount; i++)
+            {
+                stringData strdata = stringData{};
+                ReadContent(bnk_file, strdata);
+            }
+
+            for (unsigned int i = 0; i < stringDataCount; i++)
+            {
+                char string = NULL;
+
+                do
+                {
+                    ReadContent(bnk_file, string);
+                    bnk_file.seekg(1, std::ios::cur);
+                } while (string != NULL);
+            }
+
+            std::uint32_t bnkCount = 0, wemCount = 0;
+            ReadContent(bnk_file, bnkCount);
+            ReadContent(bnk_file, wemCount);
+
+            for (unsigned int i = 0; i < wemCount; i++)
+            {
+                embeddedMedia media = embeddedMedia{};
+                ReadContent(bnk_file, media);
+                rfiles.push_back(std::make_pair(media, std::uint32_t(std::uint32_t(bnk_file.tellg()) - sizeof(embeddedMedia))));
+            }
+        }
         else if (Compare(content_section.sign, "DIDX"))
         {
-            // Read file indices
             for (auto i = 0U; i < content_section.size; i += sizeof(content_index))
             {
                 ReadContent(bnk_file, content_index);
@@ -320,27 +394,52 @@ int main(int argument_count, char* arguments[])
                 objects.push_back(object);
             }
         }
+        else if (Compare(content_section.sign, "RIFF"))
+        {
+            auto wem_filename = output_directory;
+            wem_filename = wem_filename.append(std::to_string(rfiles[riffnum].first.ID)).replace_extension(".wem");
 
-        // Seek to the end of the section
+            if (extract)
+            {
+                auto wem_file = std::fstream{ wem_filename, std::ios::binary | std::ios::out };
+                bnk_file.seekg(std::uint32_t(bnk_file.tellg()) - sizeof(Section), std::ios_base::beg);
+                auto data = std::vector<char>(content_section.size + sizeof(Section), 0U);
+                bnk_file.read(data.data(), content_section.size + sizeof(Section));
+                wem_file.write(data.data(), content_section.size + sizeof(Section));
+                wem_file.close();
+            }
+            if (import)
+            {
+                auto wem_file = std::fstream{ wem_filename, std::ios::binary | std::ios::in };
+                if (!wem_file.is_open())
+                {
+                    std::cout << "Unable to open file '" << wem_filename.string() << "'\n";
+                    continue;
+                }
+
+                wem_file.seekg(0, std::ios::end);
+                auto size = wem_file.tellg();
+                rfiles[riffnum].first.Length = std::uint32_t(size);
+                wem_file.seekg(0, std::ios::beg);
+                auto data = std::vector<char>(size, 0U);
+                wem_file.read(data.data(), size);
+                riff.push_back(std::pair(data, std::uint32_t(std::uint32_t(bnk_file.tellg()) - sizeof(Section))));
+                wem_file.close();
+            }
+
+            riffnum++;
+        }
+
         bnk_file.seekg(section_pos + content_section.size);
     }
 
-    // Reset EOF
     bnk_file.clear();
 
-    auto output_directory = bnk_filename.parent_path();
-
-    if (!no_directory)
-    {
-        output_directory = CreateOutputDirectory(bnk_filename);
-    }
-
-    // Dump objects information
     if (dump_objects)
     {
         auto object_filename = output_directory;
         object_filename = object_filename.append("objects.txt");
-        auto object_file = std::fstream{ object_filename, std::ios::out | std::ios::binary };
+        auto object_file = std::fstream{ object_filename, std::ios::binary | std::ios::out };
 
         if (!object_file.is_open())
         {
@@ -388,14 +487,13 @@ int main(int argument_count, char* arguments[])
     {
         if (data_offset == 0U || files.empty())
         {
-            std::cout << "No WEM files discovered to be extracted\n";
             return EXIT_SUCCESS;
         }
 
         std::cout << "Found " << files.size() << " WEM files\n";
         std::cout << "Start extracting...\n";
 
-        for (unsigned int vpos = 0; vpos < files.size(); vpos++)
+        for (auto vpos = 0U; vpos < files.size(); vpos++)
         {
             auto wem_filename = output_directory;
             wem_filename = wem_filename.append(std::to_string(files[vpos].first.id)).replace_extension(".wem");
@@ -417,60 +515,82 @@ int main(int argument_count, char* arguments[])
             bnk_file.seekg(data_offset + files[vpos].first.offset);
             bnk_file.read(data.data(), files[vpos].first.size);
             wem_file.write(data.data(), files[vpos].first.size);
+            wem_file.close();
         }
 
         std::cout << "Files were extracted to: " << output_directory.string() << "\n";
     }
     
     if (import) {
-        int audio_size = 0, vecsize = data_offset;
-        for (unsigned int vpos = 0, max = files.size(); vpos < max; vpos++)
+        if (data_offset != 0U || !files.empty())
         {
-            audio_size += ((max - 1 == vpos) ? files[vpos].first.size : ALIGN(files[vpos].first.size, 16));
-        }
-
-        auto out_file = std::fstream{ bnk_filename_out, std::ios::binary | std::ios::out };
-        auto out_data = std::vector<char>(vecsize);
-        bnk_file.seekg(0, std::ios::beg);
-        bnk_file.read(out_data.data(), vecsize);
-
-        for (unsigned int vpos = 0, max = files.size(); vpos < max; vpos++)
-        {
-            auto wem_filename = output_directory;
-            wem_filename = wem_filename.append(std::to_string(files[vpos].first.id)).replace_extension(".wem");
-            auto wem_file = std::fstream{ wem_filename, std::ios::in | std::ios::binary };
-
-            if (!wem_file.is_open())
+            int audio_size = 0, vecsize = data_offset;
+            for (unsigned int vpos = 0U, max = files.size(); vpos < max; vpos++)
             {
-                std::cout << "Unable to open file '" << wem_filename.string() << "'\n";
-                continue;
+                audio_size += ((max - 1 == vpos) ? files[vpos].first.size : ALIGN(files[vpos].first.size, 16));
             }
 
-            wem_file.seekg(0, std::ios::end);
-            auto size = wem_file.tellg();
-            wem_file.seekg(0, std::ios::beg);
+            auto out_file = std::fstream{ bnk_filename_out, std::ios::binary | std::ios::out };
+            auto out_data = std::vector<char>(vecsize);
+            bnk_file.seekg(0, std::ios::beg);
+            bnk_file.read(out_data.data(), vecsize);
 
-            auto vsize = vecsize + size, vsz = ((max - 1 == vpos) ? vsize : ALIGN(vsize, 16));
-            out_data.resize(vsz);
-            wem_file.read(out_data.data() + vecsize, size);
+            for (unsigned int vpos = 0U, max = files.size(); vpos < max; vpos++)
+            {
+                auto wem_filename = output_directory;
+                wem_filename = wem_filename.append(std::to_string(files[vpos].first.id)).replace_extension(".wem");
+                auto wem_file = std::fstream{ wem_filename, std::ios::in | std::ios::binary };
 
-            files[vpos].first.size = size;
-            files[vpos].first.offset = vecsize - data_offset;
-            memcpy(&out_data[files[vpos].second], &files[vpos].first, sizeof(Index));
+                if (!wem_file.is_open())
+                {
+                    std::cout << "Unable to open file '" << wem_filename.string() << "'\n";
+                    continue;
+                }
 
-            vecsize = vsz;
+                wem_file.seekg(0, std::ios::end);
+                auto size = wem_file.tellg();
+                wem_file.seekg(0, std::ios::beg);
+
+                auto vsize = vecsize + size, vsz = ((max - 1 == vpos) ? vsize : ALIGN(vsize, 16));
+                out_data.resize(vsz);
+                wem_file.read(out_data.data() + vecsize, size);
+
+                files[vpos].first.size = size;
+                files[vpos].first.offset = vecsize - data_offset;
+                memcpy(&out_data[files[vpos].second], &files[vpos].first, sizeof(Index));
+
+                vecsize = vsz;
+            }
+
+            bnk_file.seekg(0, std::ios::end);
+            auto size = bnk_file.tellg();
+            bnk_file.seekg(audio_size + data_offset, std::ios::beg);
+            size -= audio_size + data_offset;
+            out_data.resize(vecsize + size);
+            bnk_file.read(out_data.data() + vecsize, size);
+            vecsize += size;
+
+            out_file.write(out_data.data(), vecsize);
+            out_file.close();
         }
+        else if (riff.size() > 0 && rfiles.size() > 0) {
+            auto out_file = std::fstream{ bnk_filename_out, std::ios::binary | std::ios::out };
+            std::uint32_t fpos = riff[0].second;
+            auto out_data = std::vector<char>(fpos);
+            bnk_file.seekg(0, std::ios::beg);
+            bnk_file.read(out_data.data(), fpos);
 
-        bnk_file.seekg(0, std::ios::end);
-        auto size = bnk_file.tellg();
-        bnk_file.seekg(audio_size + data_offset, std::ios::beg);
-        size -= audio_size + data_offset;
-        out_data.resize(vecsize + size);
-        bnk_file.read(out_data.data() + vecsize, size);
-        vecsize += size;
+            for (auto vpos = 0U; vpos < rfiles.size(); vpos++)
+            {
+                rfiles[vpos].first.Offset = fpos;
+                fpos += rfiles[vpos].first.Length;
+                std::copy_n(riff[vpos].first.cbegin(), rfiles[vpos].first.Length, std::back_inserter(out_data));
+                memcpy(&out_data[rfiles[vpos].second], &rfiles[vpos].first, sizeof(embeddedMedia));
+            }
 
-        out_file.write(out_data.data(), vecsize);
-        out_file.close();
+            out_file.write(out_data.data(), fpos);
+            out_file.close();
+        }
     }
 
     bnk_file.close();
