@@ -207,7 +207,7 @@ std::vector<char> WemCopyChunk(std::vector<char> data, std::vector<char> wem_dat
 {
     auto content = Section{}, content2 = Section{};
     std::uint32_t pos = 0xC, pos2 = 0xC;
-    bool list = false;
+    bool list = false, fmt = false;
     std::vector<char> ret_data;
 
     std::copy_n(wem_data.data(), pos, std::back_inserter(ret_data));
@@ -223,14 +223,16 @@ std::vector<char> WemCopyChunk(std::vector<char> data, std::vector<char> wem_dat
             Compare(content.sign, "LIST"))
         {
             std::copy_n(wem_data.data() + pos, content.size + sizeof(Section), std::back_inserter(ret_data));
-            if (Compare(content.sign, "LIST"))
+            if (Compare(content.sign, "fmt")) {
+                fmt = true;
+            }
+            else if (Compare(content.sign, "LIST"))
             {
                 list = true;
             }
-
         }
         else {
-            if (!list)
+            if (!list && fmt)
             {
                 do
                 {
@@ -592,20 +594,20 @@ int main(int argument_count, char* arguments[])
 
         std::cout << "Files were extracted to: " << output_directory.string() << std::endl;
     }
-    
+
     if (import) {
         if (data_offset != 0U || !files.empty())
         {
-            int audio_size = 0, vecsize = data_offset;
+            int audio_size = 0, header_size = data_offset;
             for (unsigned int vpos = 0U, max = files.size(); vpos < max; vpos++)
             {
                 audio_size += ((max - 1 == vpos) ? files[vpos].first.size : ALIGN(files[vpos].first.size, 16));
             }
 
             auto out_file = std::fstream{ bnk_filename_out, std::ios::binary | std::ios::out };
-            auto out_data = std::vector<char>(vecsize);
+            auto out_data = std::vector<char>(header_size);
             bnk_file.seekg(0, std::ios::beg);
-            bnk_file.read(out_data.data(), vecsize);
+            bnk_file.read(out_data.data(), header_size);
 
             for (unsigned int vpos = 0U, max = files.size(); vpos < max; vpos++)
             {
@@ -633,25 +635,28 @@ int main(int argument_count, char* arguments[])
 
                 auto ret_data = WemCopyChunk(data, wem_data, size);
 
-                auto vsize = vecsize + size, vsz = ((max - 1 == vpos) ? vsize : ALIGN(vsize, 16));
+                auto vsize = header_size + size, vsz = ((max - 1 == vpos) ? vsize : ALIGN(vsize, 16));
                 out_data.resize(vsz);
-                memcpy(out_data.data() + vecsize, ret_data.data(), size);
+                memcpy(out_data.data() + header_size, ret_data.data(), size);
                 files[vpos].first.size = size;
-                files[vpos].first.offset = vecsize - data_offset;
+                files[vpos].first.offset = header_size - data_offset;
                 memcpy(&out_data[files[vpos].second], &files[vpos].first, sizeof(Index));
 
-                vecsize = vsz;
+                header_size = vsz;
             }
+
+            std::uint32_t data_size = header_size - data_offset;
+            memcpy(&out_data[data_offset - 4], &data_size, sizeof(std::uint32_t));
 
             bnk_file.seekg(0, std::ios::end);
             auto size = bnk_file.tellg();
             bnk_file.seekg(audio_size + data_offset, std::ios::beg);
             size -= audio_size + data_offset;
-            out_data.resize(vecsize + size);
-            bnk_file.read(out_data.data() + vecsize, size);
-            vecsize += size;
+            out_data.resize(header_size + size);
+            bnk_file.read(out_data.data() + header_size, size);
+            header_size += size;
 
-            out_file.write(out_data.data(), vecsize);
+            out_file.write(out_data.data(), header_size);
             out_file.close();
         }
         else if (riff.size() > 0 && rfiles.size() > 0) {
