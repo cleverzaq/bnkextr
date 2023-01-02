@@ -203,19 +203,85 @@ bool HasArgument(char* arguments[], const int argument_count, const std::string&
     return false;
 }
 
+std::vector<char> WemCopyChunk(std::vector<char> data, std::vector<char> wem_data, std::uint32_t& size)
+{
+    auto content = Section{}, content2 = Section{};
+    std::uint32_t pos = 0xC, pos2 = 0xC;
+    bool list = false;
+    std::vector<char> ret_data;
+
+    std::copy_n(wem_data.data(), pos, std::back_inserter(ret_data));
+
+    do
+    {
+        content = Section{};
+        memcpy(&content, wem_data.data() + pos, sizeof(Section));
+        if (Compare(content.sign, "fmt") ||
+            Compare(content.sign, "cue") ||
+            Compare(content.sign, "smpl") ||
+            Compare(content.sign, "vorb") ||
+            Compare(content.sign, "LIST"))
+        {
+            std::copy_n(wem_data.data() + pos, content.size + sizeof(Section), std::back_inserter(ret_data));
+            if (Compare(content.sign, "LIST"))
+            {
+                list = true;
+            }
+
+        }
+        else {
+            if (!list)
+            {
+                do
+                {
+                    content2 = Section{};
+                    memcpy(&content2, data.data() + pos2, sizeof(Section));
+                    if (Compare(content2.sign, "fmt") ||
+                        Compare(content2.sign, "cue") ||
+                        Compare(content2.sign, "smpl") ||
+                        Compare(content2.sign, "vorb") ||
+                        Compare(content2.sign, "LIST"))
+                    {
+                        if ((Compare(content2.sign, "LIST") && !list)) {
+                            std::uint32_t fsize = 0;
+                            memcpy(&fsize, wem_data.data() + 4, sizeof(std::uint32_t));
+                            fsize += content2.size + sizeof(Section);
+                            size += content2.size + sizeof(Section);
+                            std::copy_n(data.data() + pos2, content2.size + sizeof(Section), std::back_inserter(ret_data));
+                            memcpy(wem_data.data() + 4, &fsize, sizeof(std::uint32_t));
+                        }
+                    }
+                    else {
+                        break;
+                    }
+                    pos2 += content2.size + sizeof(Section);
+                } while (true);
+            }
+            if (Compare(content.sign, "data")) {
+                std::copy_n(wem_data.data() + pos, wem_data.size() - pos, std::back_inserter(ret_data));
+            }
+            pos += content.size + sizeof(Section);
+            break;
+        }
+        pos += content.size + sizeof(Section);
+    } while (true);
+
+    return ret_data;
+}
+
 int main(int argument_count, char* arguments[])
 {
-    std::cout << "Wwise *.BNK File Extractor\n";
-    std::cout << "(c) RAWR 2015-2022 - https://rawr4firefall.com\n\n";
+    std::cout << "Wwise *.BNK File Extractor" << std::endl;
+    std::cout << "(c) RAWR 2015-2022 - https://rawr4firefall.com" << std::endl << std::endl;
 
     if (argument_count < 2)
     {
-        std::cout << "Usage: bnkextr filename.bnk [/extract] [/import] [/swap] [/nodir] [/obj]\n";
-        std::cout << "\t/extract - extract the files to the folder\n";
-        std::cout << "\t/import - import the files from the folder\n";
-        std::cout << "\t/swap - swap byte order (use it for unpacking 'Army of Two')\n";
-        std::cout << "\t/nodir - create no additional directory for the *.wem files\n";
-        std::cout << "\t/obj - generate an objects.txt file with the extracted object data\n";
+        std::cout << "Usage: bnkextr filename.bnk [/extract] [/import] [/swap] [/nodir] [/obj]" << std::endl;
+        std::cout << "\t/extract - extract the files to the folder" << std::endl;
+        std::cout << "\t/import - import the files from the folder" << std::endl;
+        std::cout << "\t/swap - swap byte order (use it for unpacking 'Army of Two')" << std::endl;
+        std::cout << "\t/nodir - create no additional directory for the *.wem files" << std::endl;
+        std::cout << "\t/obj - generate an objects.txt file with the extracted object data" << std::endl;
         return EXIT_SUCCESS;
     }
 
@@ -231,7 +297,7 @@ int main(int argument_count, char* arguments[])
 
     if (!bnk_file.is_open())
     {
-        std::cout << "Can't open input file: " << bnk_filename << "\n";
+        std::cout << "Can't open input file: " << bnk_filename << std::endl;
         return EXIT_FAILURE;
     }
 
@@ -269,8 +335,8 @@ int main(int argument_count, char* arguments[])
             ReadContent(bnk_file, bank_header);
             bnk_file.seekg(content_section.size - sizeof(BankHeader), std::ios_base::cur);
 
-            std::cout << "Wwise Bank Version: " << bank_header.version << "\n";
-            std::cout << "Bank ID: " << bank_header.id << "\n";
+            std::cout << "Wwise Bank Version: " << bank_header.version << std::endl;
+            std::cout << "Bank ID: " << bank_header.id << std::endl;
         }
         else if (Compare(content_section.sign, "AKPK"))
         {
@@ -399,12 +465,15 @@ int main(int argument_count, char* arguments[])
             auto wem_filename = output_directory;
             wem_filename = wem_filename.append(std::to_string(rfiles[riffnum].first.ID)).replace_extension(".wem");
 
+            auto curr = bnk_file.tellg();
+            bnk_file.seekg(std::uint32_t(curr) - sizeof(Section), std::ios_base::beg);
+            auto data = std::vector<char>(content_section.size + sizeof(Section), 0U);
+            bnk_file.read(data.data(), content_section.size + sizeof(Section));
+
             if (extract)
             {
                 auto wem_file = std::fstream{ wem_filename, std::ios::binary | std::ios::out };
-                bnk_file.seekg(std::uint32_t(bnk_file.tellg()) - sizeof(Section), std::ios_base::beg);
-                auto data = std::vector<char>(content_section.size + sizeof(Section), 0U);
-                bnk_file.read(data.data(), content_section.size + sizeof(Section));
+                std::cout << "Extracted: " << wem_filename << std::endl;
                 wem_file.write(data.data(), content_section.size + sizeof(Section));
                 wem_file.close();
             }
@@ -413,17 +482,19 @@ int main(int argument_count, char* arguments[])
                 auto wem_file = std::fstream{ wem_filename, std::ios::binary | std::ios::in };
                 if (!wem_file.is_open())
                 {
-                    std::cout << "Unable to open file '" << wem_filename.string() << "'\n";
+                    std::cout << "Unable to open file " << wem_filename.string() << std::endl;
                     continue;
                 }
+                std::cout << "Imported: " << wem_filename << std::endl;
 
                 wem_file.seekg(0, std::ios::end);
-                auto size = wem_file.tellg();
-                rfiles[riffnum].first.Length = std::uint32_t(size);
+                std::uint32_t size = wem_file.tellg();
                 wem_file.seekg(0, std::ios::beg);
-                auto data = std::vector<char>(size, 0U);
-                wem_file.read(data.data(), size);
-                riff.push_back(std::pair(data, std::uint32_t(std::uint32_t(bnk_file.tellg()) - sizeof(Section))));
+                auto wem_data = std::vector<char>(size, 0U);
+                wem_file.read(wem_data.data(), size);
+                auto ret_data = WemCopyChunk(data, wem_data, size);
+                rfiles[riffnum].first.Length = size;
+                riff.push_back(std::pair(ret_data, std::uint32_t(std::uint32_t(curr) - sizeof(Section))));
                 wem_file.close();
             }
 
@@ -443,44 +514,44 @@ int main(int argument_count, char* arguments[])
 
         if (!object_file.is_open())
         {
-            std::cout << "Unable to write objects file '" << object_filename.string() << "'\n";
+            std::cout << "Unable to write objects file '" << object_filename.string() << std::endl;
             return EXIT_FAILURE;
         }
 
         for (auto& [type, size, id] : objects)
         {
-            object_file << "Object ID: " << id << "\n";
+            object_file << "Object ID: " << id << std::endl;
 
             switch (type)
             {
             case ObjectType::Event:
-                object_file << "\tType: Event\n";
-                object_file << "\tNumber of Actions: " << event_objects[id].action_count << "\n";
+                object_file << "\tType: Event" << std::endl;
+                object_file << "\tNumber of Actions: " << event_objects[id].action_count << std::endl;
 
                 for (auto& action_id : event_objects[id].action_ids)
                 {
-                    object_file << "\tAction ID: " << action_id << "\n";
+                    object_file << "\tAction ID: " << action_id << std::endl;
                 }
                 break;
             case ObjectType::EventAction:
-                object_file << "\tType: EventAction\n";
-                object_file << "\tAction Scope: " << static_cast<int>(event_action_objects[id].scope) << "\n";
-                object_file << "\tAction Type: " << static_cast<int>(event_action_objects[id].action_type) << "\n";
-                object_file << "\tGame Object ID: " << static_cast<int>(event_action_objects[id].game_object_id) << "\n";
-                object_file << "\tNumber of Parameters: " << static_cast<int>(event_action_objects[id].parameter_count) << "\n";
+                object_file << "\tType: EventAction" << std::endl;
+                object_file << "\tAction Scope: " << static_cast<int>(event_action_objects[id].scope) << std::endl;
+                object_file << "\tAction Type: " << static_cast<int>(event_action_objects[id].action_type) << std::endl;
+                object_file << "\tGame Object ID: " << static_cast<int>(event_action_objects[id].game_object_id) << std::endl;
+                object_file << "\tNumber of Parameters: " << static_cast<int>(event_action_objects[id].parameter_count) << std::endl;
 
                 for (auto j = 0; j < event_action_objects[id].parameter_count; ++j)
                 {
-                    object_file << "\t\tParameter Type: " << static_cast<int>(event_action_objects[id].parameters_types[j]) << "\n";
-                    object_file << "\t\tParameter: " << static_cast<int>(event_action_objects[id].parameters[j]) << "\n";
+                    object_file << "\t\tParameter Type: " << static_cast<int>(event_action_objects[id].parameters_types[j]) << std::endl;
+                    object_file << "\t\tParameter: " << static_cast<int>(event_action_objects[id].parameters[j]) << std::endl;
                 }
                 break;
             default:
-                object_file << "\tType: " << static_cast<int>(type) << "\n";
+                object_file << "\tType: " << static_cast<int>(type) << std::endl;
             }
         }
 
-        std::cout << "Objects file was written to: " << object_filename.string() << "\n";
+        std::cout << "Objects file was written to: " << object_filename.string() << std::endl;
     }
 
     if (extract)
@@ -490,14 +561,15 @@ int main(int argument_count, char* arguments[])
             return EXIT_SUCCESS;
         }
 
-        std::cout << "Found " << files.size() << " WEM files\n";
-        std::cout << "Start extracting...\n";
+        std::cout << "Found " << files.size() << " WEM files" << std::endl;
+        std::cout << "Start extracting..." << std::endl;
 
         for (auto vpos = 0U; vpos < files.size(); vpos++)
         {
             auto wem_filename = output_directory;
             wem_filename = wem_filename.append(std::to_string(files[vpos].first.id)).replace_extension(".wem");
             auto wem_file = std::fstream{ wem_filename, std::ios::out | std::ios::binary };
+            std::cout << "Extracted: " << wem_filename << std::endl;
 
             if (swap_byte_order)
             {
@@ -507,7 +579,7 @@ int main(int argument_count, char* arguments[])
 
             if (!wem_file.is_open())
             {
-                std::cout << "Unable to write file '" << wem_filename.string() << "'\n";
+                std::cout << "Unable to write file " << wem_filename.string() << std::endl;
                 continue;
             }
 
@@ -518,7 +590,7 @@ int main(int argument_count, char* arguments[])
             wem_file.close();
         }
 
-        std::cout << "Files were extracted to: " << output_directory.string() << "\n";
+        std::cout << "Files were extracted to: " << output_directory.string() << std::endl;
     }
     
     if (import) {
@@ -539,22 +611,31 @@ int main(int argument_count, char* arguments[])
             {
                 auto wem_filename = output_directory;
                 wem_filename = wem_filename.append(std::to_string(files[vpos].first.id)).replace_extension(".wem");
+                std::cout << "Imported: " << wem_filename << std::endl;
                 auto wem_file = std::fstream{ wem_filename, std::ios::in | std::ios::binary };
 
                 if (!wem_file.is_open())
                 {
-                    std::cout << "Unable to open file '" << wem_filename.string() << "'\n";
+                    std::cout << "Unable to open file " << wem_filename.string() << std::endl;
                     continue;
                 }
 
                 wem_file.seekg(0, std::ios::end);
-                auto size = wem_file.tellg();
+                std::uint32_t size = wem_file.tellg();
                 wem_file.seekg(0, std::ios::beg);
+
+                auto wem_data = std::vector<char>(size, 0U);
+                wem_file.read(wem_data.data(), size);
+
+                auto data = std::vector<char>(files[vpos].first.size, 0U);
+                bnk_file.seekg(data_offset + files[vpos].first.offset);
+                bnk_file.read(data.data(), files[vpos].first.size);
+
+                auto ret_data = WemCopyChunk(data, wem_data, size);
 
                 auto vsize = vecsize + size, vsz = ((max - 1 == vpos) ? vsize : ALIGN(vsize, 16));
                 out_data.resize(vsz);
-                wem_file.read(out_data.data() + vecsize, size);
-
+                memcpy(out_data.data() + vecsize, ret_data.data(), size);
                 files[vpos].first.size = size;
                 files[vpos].first.offset = vecsize - data_offset;
                 memcpy(&out_data[files[vpos].second], &files[vpos].first, sizeof(Index));
