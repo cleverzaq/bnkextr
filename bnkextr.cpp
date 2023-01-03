@@ -1,166 +1,4 @@
-#include <cstring>
-#include <filesystem>
-#include <fstream>
-#include <iostream>
-#include <string>
-#include <vector>
-#include <string>
-#include <cstdint>
-#include <map>
-
-#define ALIGN(value, align) value + ((align - (value % align)) % align)
-
-struct Index;
-struct Section;
-
-#pragma pack(push, 1)
-struct Index
-{
-    std::uint32_t id;
-    std::uint32_t offset;
-    std::uint32_t size;
-};
-#pragma pack(pop)
-
-#pragma pack(push, 1)
-struct Section
-{
-    char sign[4];
-    std::uint32_t size;
-};
-#pragma pack(pop)
-
-#pragma pack(push, 1)
-struct BankHeader
-{
-    std::uint32_t version;
-    std::uint32_t id;
-};
-#pragma pack(pop)
-
-#pragma pack(push, 1)
-struct PCK_Header
-{
-    std::uint32_t unkn2;
-    std::uint32_t languageLength;
-    std::uint32_t bnkTableLength;
-    std::uint32_t wemTableLength;
-    std::uint32_t unkn6;
-};
-#pragma pack(pop)
-
-#pragma pack(push, 1)
-struct stringData
-{
-    std::uint32_t postHeaderOffset;
-    std::uint32_t index;
-};
-#pragma pack(pop)
-
-#pragma pack(push, 1)
-struct embeddedMedia
-{
-    uint32_t ID;
-    uint32_t unkn;
-    uint32_t Length;
-    uint32_t Offset;
-    uint32_t language;
-};
-#pragma pack(pop)
-
-enum class ObjectType : std::int8_t
-{
-    SoundEffectOrVoice = 2,
-    EventAction = 3,
-    Event = 4,
-    RandomOrSequenceContainer = 5,
-    SwitchContainer = 6,
-    ActorMixer = 7,
-    AudioBus = 8,
-    BlendContainer = 9,
-    MusicSegment = 10,
-    MusicTrack = 11,
-    MusicSwitchContainer = 12,
-    MusicPlaylistContainer = 13,
-    Attenuation = 14,
-    DialogueEvent = 15,
-    MotionBus = 16,
-    MotionFx = 17,
-    Effect = 18,
-    Unknown = 19,
-    AuxiliaryBus = 20
-};
-
-#pragma pack(push, 1)
-struct Object
-{
-    ObjectType type;
-    std::uint32_t size;
-    std::uint32_t id;
-};
-#pragma pack(pop)
-
-struct EventObject
-{
-    std::uint32_t action_count;
-    std::vector<std::uint32_t> action_ids;
-};
-
-enum class EventActionScope : std::int8_t
-{
-    SwitchOrTrigger = 1,
-    Global = 2,
-    GameObject = 3,
-    State = 4,
-    All = 5,
-    AllExcept = 6
-};
-
-enum class EventActionType : std::int8_t
-{
-    Stop = 1,
-    Pause = 2,
-    Resume = 3,
-    Play = 4,
-    Trigger = 5,
-    Mute = 6,
-    UnMute = 7,
-    SetVoicePitch = 8,
-    ResetVoicePitch = 9,
-    SetVoiceVolume = 10,
-    ResetVoiceVolume = 11,
-    SetBusVolume = 12,
-    ResetBusVolume = 13,
-    SetVoiceLowPassFilter = 14,
-    ResetVoiceLowPassFilter = 15,
-    EnableState = 16,
-    DisableState = 17,
-    SetState = 18,
-    SetGameParameter = 19,
-    ResetGameParameter = 20,
-    SetSwitch = 21,
-    ToggleBypass = 22,
-    ResetBypassEffect = 23,
-    Break = 24,
-    Seek = 25
-};
-
-enum class EventActionParameterType : std::int8_t
-{
-    Delay = 0x0E,
-    Play = 0x0F,
-    Probability = 0x10
-};
-
-struct EventActionObject
-{
-    EventActionScope scope;
-    EventActionType action_type;
-    std::uint32_t game_object_id;
-    std::uint8_t parameter_count;
-    std::vector<EventActionParameterType> parameters_types;
-    std::vector<std::int8_t> parameters;
-};
+#include "bnkextr.hpp"
 
 int Swap32(const uint32_t dword)
 {
@@ -209,6 +47,10 @@ std::vector<char> WemCopyChunk(std::vector<char> data, std::vector<char> wem_dat
     std::uint32_t pos = 0xC, pos2 = 0xC;
     bool list = false, fmt = false;
     std::vector<char> ret_data;
+
+    if (wem_data.size() < sizeof(Section)) {
+        return wem_data;
+    }
 
     std::copy_n(wem_data.data(), pos, std::back_inserter(ret_data));
 
@@ -274,7 +116,7 @@ std::vector<char> WemCopyChunk(std::vector<char> data, std::vector<char> wem_dat
 int main(int argument_count, char* arguments[])
 {
     std::cout << "Wwise *.BNK File Extractor" << std::endl;
-    std::cout << "(c) RAWR 2015-2022 - https://rawr4firefall.com" << std::endl << std::endl;
+    std::cout << "(c) RAWR 2015-2022 & cleverzaq 2022-2023" << std::endl << std::endl;
 
     if (argument_count < 2)
     {
@@ -310,17 +152,19 @@ int main(int argument_count, char* arguments[])
         output_directory = CreateOutputDirectory(bnk_filename);
     }
 
-    auto data_offset = std::size_t{ 0U };
+    auto data_offset = std::size_t{ 0U }, hirc_offset = std::size_t{ 0U };
     auto files = std::vector<std::pair<Index, std::uint32_t>>{};
     auto content_section = Section{};
     auto content_index = Index{};
     auto bank_header = BankHeader{};
-    auto objects = std::vector<Object>{};
+
+    auto objects = std::vector<std::pair<Object, std::uint32_t>>{};
+    auto sound = std::map<std::uint32_t, Sound>{};
     auto event_objects = std::map<std::uint32_t, EventObject>{};
     auto event_action_objects = std::map<std::uint32_t, EventActionObject>{};
 
     auto rfiles = std::vector<std::pair<embeddedMedia, std::uint32_t>>{};
-    std::vector<std::pair<std::vector<char>, std::uint32_t>> riff;
+    auto riff = std::vector<std::pair<std::vector<char>, std::uint32_t>>{};
     auto riffnum = 0;
 
     while (ReadContent(bnk_file, content_section))
@@ -373,7 +217,7 @@ int main(int argument_count, char* arguments[])
             {
                 embeddedMedia media = embeddedMedia{};
                 ReadContent(bnk_file, media);
-                rfiles.push_back(std::make_pair(media, std::uint32_t(std::uint32_t(bnk_file.tellg()) - sizeof(embeddedMedia))));
+                rfiles.push_back(std::make_pair(media, static_cast<std::uint32_t>(static_cast<std::uint32_t>(bnk_file.tellg()) - sizeof(embeddedMedia))));
             }
         }
         else if (Compare(content_section.sign, "DIDX"))
@@ -381,12 +225,12 @@ int main(int argument_count, char* arguments[])
             for (auto i = 0U; i < content_section.size; i += sizeof(content_index))
             {
                 ReadContent(bnk_file, content_index);
-                files.push_back(std::make_pair(content_index, std::uint32_t(std::uint32_t(bnk_file.tellg()) - sizeof(content_index))));
+                files.push_back(std::make_pair(content_index, static_cast<std::uint32_t>(static_cast<std::uint32_t>(bnk_file.tellg()) - sizeof(content_index))));
             }
         }
         else if (Compare(content_section.sign, "STID"))
         {
-            // To be implemented
+
         }
         else if (Compare(content_section.sign, "DATA"))
         {
@@ -394,28 +238,21 @@ int main(int argument_count, char* arguments[])
         }
         else if (Compare(content_section.sign, "HIRC"))
         {
+            hirc_offset = bnk_file.tellg();
+
             auto object_count = std::uint32_t{ 0 };
             ReadContent(bnk_file, object_count);
 
             for (auto i = 0U; i < object_count; ++i)
             {
+                std::uint32_t header_position = static_cast<std::uint32_t>(bnk_file.tellg());
                 auto object = Object{};
                 ReadContent(bnk_file, object);
 
                 if (object.type == ObjectType::Event)
                 {
                     auto event = EventObject{};
-
-                    if (bank_header.version >= 134)
-                    {
-                        auto count = std::uint8_t{ 0 };
-                        ReadContent(bnk_file, count);
-                        event.action_count = static_cast<std::uint32_t>(count);
-                    }
-                    else
-                    {
-                        ReadContent(bnk_file, event.action_count);
-                    }
+                    ReadContent(bnk_file, event.action_count);
 
                     for (auto j = 0U; j < event.action_count; ++j)
                     {
@@ -433,9 +270,6 @@ int main(int argument_count, char* arguments[])
                     ReadContent(bnk_file, event_action.scope);
                     ReadContent(bnk_file, event_action.action_type);
                     ReadContent(bnk_file, event_action.game_object_id);
-
-                    bnk_file.seekg(1, std::ios_base::cur);
-
                     ReadContent(bnk_file, event_action.parameter_count);
 
                     for (auto j = 0U; j < static_cast<std::size_t>(event_action.parameter_count); ++j)
@@ -452,14 +286,17 @@ int main(int argument_count, char* arguments[])
                         event_action.parameters.push_back(parameter);
                     }
 
-                    bnk_file.seekg(1, std::ios_base::cur);
-                    bnk_file.seekg(object.size - 13 - event_action.parameter_count * 2, std::ios_base::cur);
-
                     event_action_objects[object.id] = event_action;
                 }
+                else if (object.type == ObjectType::Sound)
+                {
+                    auto sound_struct = Sound{};
+                    ReadContent(bnk_file, sound_struct);
+                    sound[object.id] = sound_struct;
+                }
 
-                bnk_file.seekg(object.size - sizeof(std::uint32_t), std::ios_base::cur);
-                objects.push_back(object);
+                bnk_file.seekg(header_position + object.size + sizeof(Object) - sizeof(std::uint32_t), std::ios_base::beg);
+                objects.push_back(std::make_pair(object, header_position));
             }
         }
         else if (Compare(content_section.sign, "RIFF"))
@@ -494,9 +331,11 @@ int main(int argument_count, char* arguments[])
                 wem_file.seekg(0, std::ios::beg);
                 auto wem_data = std::vector<char>(size, 0U);
                 wem_file.read(wem_data.data(), size);
+
                 auto ret_data = WemCopyChunk(data, wem_data, size);
                 rfiles[riffnum].first.Length = size;
-                riff.push_back(std::pair(ret_data, std::uint32_t(std::uint32_t(curr) - sizeof(Section))));
+
+                riff.push_back(std::pair(ret_data, static_cast<std::uint32_t>(static_cast<std::uint32_t>(curr) - sizeof(Section))));
                 wem_file.close();
             }
 
@@ -508,7 +347,7 @@ int main(int argument_count, char* arguments[])
 
     bnk_file.clear();
 
-    if (dump_objects)
+    if (objects.size() > 0 && dump_objects)
     {
         auto object_filename = output_directory;
         object_filename = object_filename.append("objects.txt");
@@ -520,37 +359,44 @@ int main(int argument_count, char* arguments[])
             return EXIT_FAILURE;
         }
 
-        for (auto& [type, size, id] : objects)
+        for (auto vpos = 0U; vpos < objects.size(); vpos++)
         {
-            object_file << "Object ID: " << id << std::endl;
+            object_file << "Object ID: " << objects[vpos].first.id << std::endl;
+            object_file << "Type: " << GetObjectTypeName(objects[vpos].first.type) << std::endl;
 
-            switch (type)
+            switch (objects[vpos].first.type)
             {
             case ObjectType::Event:
-                object_file << "\tType: Event" << std::endl;
-                object_file << "\tNumber of Actions: " << event_objects[id].action_count << std::endl;
+                object_file << "\tNumber of Actions: " << event_objects[objects[vpos].first.id].action_count << std::endl;
 
-                for (auto& action_id : event_objects[id].action_ids)
+                for (auto& action_id : event_objects[objects[vpos].first.id].action_ids)
                 {
                     object_file << "\tAction ID: " << action_id << std::endl;
                 }
                 break;
-            case ObjectType::EventAction:
-                object_file << "\tType: EventAction" << std::endl;
-                object_file << "\tAction Scope: " << static_cast<int>(event_action_objects[id].scope) << std::endl;
-                object_file << "\tAction Type: " << static_cast<int>(event_action_objects[id].action_type) << std::endl;
-                object_file << "\tGame Object ID: " << static_cast<int>(event_action_objects[id].game_object_id) << std::endl;
-                object_file << "\tNumber of Parameters: " << static_cast<int>(event_action_objects[id].parameter_count) << std::endl;
 
-                for (auto j = 0; j < event_action_objects[id].parameter_count; ++j)
+            case ObjectType::EventAction:
+                object_file << "\tAction Scope: " << GetEventActionName(event_action_objects[objects[vpos].first.id].scope) << std::endl;
+                object_file << "\tAction Type: " << GetActionName(event_action_objects[objects[vpos].first.id].action_type) << std::endl;
+                object_file << "\tGame Object ID: " << static_cast<std::uint32_t>(event_action_objects[objects[vpos].first.id].game_object_id) << std::endl;
+                object_file << "\tNumber of Parameters: " << static_cast<std::uint32_t>(event_action_objects[objects[vpos].first.id].parameter_count) << std::endl;
+
+                for (auto j = 0; j < event_action_objects[objects[vpos].first.id].parameter_count; ++j)
                 {
-                    object_file << "\t\tParameter Type: " << static_cast<int>(event_action_objects[id].parameters_types[j]) << std::endl;
-                    object_file << "\t\tParameter: " << static_cast<int>(event_action_objects[id].parameters[j]) << std::endl;
+                    object_file << "\t\tParameter Type: " << GetEventActionParameterName(event_action_objects[objects[vpos].first.id].parameters_types[j]) << std::endl;
+                    object_file << "\t\tParameter: " << static_cast<std::uint32_t>(event_action_objects[objects[vpos].first.id].parameters[j]) << std::endl;
                 }
                 break;
-            default:
-                object_file << "\tType: " << static_cast<int>(type) << std::endl;
+
+            case ObjectType::Sound:
+                object_file << "\tAudioID: " << static_cast<std::uint32_t>(sound[objects[vpos].first.id].AudioID) << std::endl;
+                object_file << "\tSourceID: " << static_cast<std::uint32_t>(sound[objects[vpos].first.id].SourceID) << std::endl;
+                object_file << "\tSoundType: " << GetSoundTypeName(sound[objects[vpos].first.id].SoundType) << std::endl;
+                object_file << "\tStorageType: " << GetStorageTypeName(sound[objects[vpos].first.id].state) << std::endl;
+                break;
             }
+
+            object_file << std::endl;
         }
 
         std::cout << "Objects file was written to: " << object_filename.string() << std::endl;
@@ -594,8 +440,7 @@ int main(int argument_count, char* arguments[])
 
         std::cout << "Files were extracted to: " << output_directory.string() << std::endl;
     }
-
-    if (import) {
+    else if (import) {
         if (data_offset != 0U || !files.empty())
         {
             int audio_size = 0, header_size = data_offset;
@@ -639,6 +484,14 @@ int main(int argument_count, char* arguments[])
                 out_data.resize(vsz);
                 memcpy(out_data.data() + header_size, ret_data.data(), size);
                 files[vpos].first.size = size;
+                for (auto v = 0U; v < objects.size(); v++)
+                {
+                    if (sound[objects[v].first.id].AudioID == files[vpos].first.id)
+                    {
+                        sound[objects[v].first.id].InMemoryMediaSize = size;
+                        break;
+                    }
+                }
                 files[vpos].first.offset = header_size - data_offset;
                 memcpy(&out_data[files[vpos].second], &files[vpos].first, sizeof(Index));
 
@@ -649,12 +502,24 @@ int main(int argument_count, char* arguments[])
             memcpy(&out_data[data_offset - 4], &data_size, sizeof(std::uint32_t));
 
             bnk_file.seekg(0, std::ios::end);
-            auto size = bnk_file.tellg();
+            std::int32_t size = bnk_file.tellg();
             bnk_file.seekg(audio_size + data_offset, std::ios::beg);
             size -= audio_size + data_offset;
+
             out_data.resize(header_size + size);
             bnk_file.read(out_data.data() + header_size, size);
             header_size += size;
+
+            for (auto obj_pos = 0U; obj_pos < objects.size(); obj_pos++)
+            {
+                std::int32_t bnk_hirc_pos = header_size - size + objects[obj_pos].second - hirc_offset + sizeof(Object) - 1;
+                switch (objects[obj_pos].first.type)
+                {
+                case ObjectType::Sound:
+                    memcpy(out_data.data() + bnk_hirc_pos + sizeof(Object), &sound[objects[obj_pos].first.id], sizeof(Sound));
+                    break;
+                }
+            }
 
             out_file.write(out_data.data(), header_size);
             out_file.close();

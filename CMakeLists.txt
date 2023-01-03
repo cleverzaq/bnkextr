@@ -2,7 +2,7 @@ cmake_minimum_required(VERSION 3.15)
 
 project(bnkextr LANGUAGES CXX)
 
-add_executable(${PROJECT_NAME} "bnkextr.cpp")
+add_executable(${PROJECT_NAME} "bnkextr.cpp" "bnkextr.hpp")
 
 target_compile_features(${PROJECT_NAME} PRIVATE cxx_std_17)
 set_target_properties(${PROJECT_NAME}
