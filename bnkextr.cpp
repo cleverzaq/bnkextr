@@ -60,6 +60,7 @@ std::vector<char> WemCopyChunk(std::vector<char> data, std::vector<char> wem_dat
         memcpy(&content, wem_data.data() + pos, sizeof(Section));
         if (Compare(content.sign, "fmt") ||
             Compare(content.sign, "cue") ||
+            Compare(content.sign, "hash") ||
             Compare(content.sign, "smpl") ||
             Compare(content.sign, "vorb") ||
             Compare(content.sign, "LIST"))
@@ -82,6 +83,7 @@ std::vector<char> WemCopyChunk(std::vector<char> data, std::vector<char> wem_dat
                     memcpy(&content2, data.data() + pos2, sizeof(Section));
                     if (Compare(content2.sign, "fmt") ||
                         Compare(content2.sign, "cue") ||
+                        Compare(content.sign, "hash") ||
                         Compare(content2.sign, "smpl") ||
                         Compare(content2.sign, "vorb") ||
                         Compare(content2.sign, "LIST"))
@@ -252,7 +254,17 @@ int main(int argument_count, char* arguments[])
                 if (object.type == ObjectType::Event)
                 {
                     auto event = EventObject{};
-                    ReadContent(bnk_file, event.action_count);
+
+                    if (bank_header.version >= 134)
+                    {
+                        auto count = std::uint8_t{ 0 };
+                        ReadContent(bnk_file, count);
+                        event.action_count = static_cast<std::uint32_t>(count);
+                    }
+                    else
+                    {
+                        ReadContent(bnk_file, event.action_count);
+                    }
 
                     for (auto j = 0U; j < event.action_count; ++j)
                     {
